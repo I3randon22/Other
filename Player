@@ -1,0 +1,243 @@
+using Godot;
+using System;
+
+public class Player : KinematicBody2D
+{
+    Vector2 input_vector = Vector2.Zero;
+	Vector2 velocity = Vector2.Zero;
+	[Export] internal int maxSpeed = 40;
+	const int acceleration = 500;
+	const int friction = 500;
+	internal bool isAttacking = false;
+	internal bool isDead = false;
+
+    Toolbar toolbar;
+	Damage damage;
+	ProgressBar health;
+	ProgressBar stamina;
+	
+	Node2D weapon;
+	CanvasItem trail;
+
+    //Animation
+    AnimationPlayer animationPlayer;
+    AnimationTree animationTree;
+    AnimationNodeStateMachinePlayback animationState;
+
+	enum Actions{
+		MOVE,
+		ATTACK,
+		TIRED,
+		HURT,
+		DEATH
+	}
+
+	ItemResource equipState;
+	Actions state = Actions.MOVE;
+
+
+	public override void _Ready()
+	{
+		toolbar = GetNode<Toolbar>("Toolbar");
+		//Animations
+		animationPlayer = GetNode<AnimationPlayer>("AnimationPlayer");
+		animationTree = GetNode<AnimationTree>("AnimationTree");
+		animationState = (AnimationNodeStateMachinePlayback)animationTree.Get("parameters/playback");
+		damage = GetNode<Damage>("Damage");
+		health = GetNode<ProgressBar>("../Health");
+		stamina = GetNode<ProgressBar>("../Stamina");
+		animationTree.Active = true;
+		equipState = new ItemResource();
+		weapon = GetNode<Node2D>("GrabHand");
+		trail = GetNode<CanvasItem>("Trail");
+
+		this.Position = GameManager.playerInitialPos;
+	}
+
+
+	public override void _PhysicsProcess(float delta)
+	{
+		if(!GameManager.paused)
+		{
+			AnimationSet();
+			getCurrentSelected();
+			
+			switch(state)
+			{
+				case Actions.MOVE:
+					MoveState(delta);
+					break;
+				case Actions.ATTACK:
+					AttackState(delta);
+					break;
+				case Actions.TIRED:
+					TiredState(delta);
+					break;
+				case Actions.HURT:
+					HurtState(delta);
+					break;
+				case Actions.DEATH:
+					DeathState(delta);
+					break;
+				default:
+					break;
+			}
+
+			if(health.currentValue <= 0)
+			{
+				state = Actions.DEATH;
+			}
+			
+			damage.knockback = MoveAndSlide(damage.knockback); //Knockback relative to Frame Rate
+
+			if(Input.IsActionJustPressed("Attack") && !damage.takingDamage && !isAttacking && !stamina.isEmpty)
+			{
+				//If your item selected is a tool
+				if(equipState.type == ItemResource.ItemType.TOOLS)
+				{
+					stamina.ReduceValue(equipState.staminaDeplete);
+					state = Actions.ATTACK;
+				}
+				else
+				{
+					GD.Print("Can't Attack");
+				}
+			}
+
+			if(damage.takingDamage && isAttacking)
+			{
+				AttackFinished();
+			}
+
+			if(stamina.isEmpty)
+			{
+				state = Actions.TIRED;
+			}
+		}
+	}
+				
+
+	private void AnimationSet()
+	{
+		if(!isAttacking && !damage.takingDamage)
+		{
+			input_vector.y = Input.GetActionStrength("Down") - Input.GetActionStrength("Up");
+			input_vector.x = Input.GetActionStrength("Right") - Input.GetActionStrength("Left");
+			input_vector = input_vector.Normalized(); //make all directions the same length (1)
+		}
+		if(input_vector != Vector2.Zero)
+		{
+			//Set animation to 2D vectors
+			animationTree.Set("parameters/Idle/blend_position", input_vector);
+			animationTree.Set("parameters/Walk/blend_position", input_vector);
+			animationTree.Set("parameters/Attack/blend_position", input_vector);
+			animationTree.Set("parameters/Hold/blend_position", input_vector);
+			animationTree.Set("parameters/Hold_Idle/blend_position", input_vector);
+		}
+	}
+
+	//Player Movement
+	private void MoveState(float delta)
+	{
+		if(!damage.takingDamage)
+		{
+			//IF player is moving
+			if (input_vector != Vector2.Zero)
+			{
+			
+				animationState.Travel("Walk");
+				//Move player
+				velocity = velocity.MoveToward(input_vector * maxSpeed, acceleration * delta); //player movement accelerates up to max speed
+			}
+			else
+			{
+				animationState.Travel("Idle");
+				//Stop Player
+				velocity = velocity.MoveToward(Vector2.Zero, friction * delta); //slows player down until it stops
+			}
+
+			velocity = MoveAndSlide(velocity);  //velocity is reletive to Frame Rate
+		}
+	}
+
+	private void AttackState(float delta)
+	{
+		isAttacking = true;
+		weapon.Visible = true;
+		animationState.Travel("Attack");
+		//Stop Player
+		velocity = velocity.MoveToward(Vector2.Zero, (friction / 2) * delta);
+		velocity = MoveAndSlide(velocity);
+	}
+
+	private void TiredState(float delta)
+	{
+		animationState.Travel("Rest");
+		if(stamina.currentValue > stamina.maxValue / 4)
+		{
+			stamina.isEmpty = false;
+			state = Actions.MOVE;
+		}
+	}
+
+	public void _onHurtBoxAreaEntered(Area2D area)
+    {
+        if(!damage.takingDamage && !health.isEmpty)
+        {
+			//grab damage amount
+		   	int damageAmount = area.GetNode<Damage>("../Damage").damageAmount;
+			//show damage output of red
+			damage.SpawnDamageOutput(damageAmount, Color.Color8(255, 0, 0));
+			//damage player
+			health.ReduceValue(damageAmount);
+			//set knockback direction
+			damage.direction = ((area.GlobalPosition - this.GlobalPosition).Normalized());
+			//goto hurt state
+			state = Actions.HURT;
+        }
+    }
+
+	private void HurtState(float delta)
+	{
+		//start hurt animation
+		animationState.Travel("Hurt");
+        velocity = Vector2.Zero;
+        //knock player back
+        damage.KnockBack(delta);
+
+		GameManager.instance.camera.Shake(300, 2, 300);
+        //prevent player from blasting off
+        state = Actions.MOVE;
+	}
+
+	private void DeathState(float delta)
+	{
+		animationState.Travel("Die");
+		GameManager.paused = true;
+		
+		//Respawn
+	}
+
+	private void AttackFinished()
+	{
+		isAttacking = false;
+		weapon.Visible = false;
+		trail.Visible = false;
+		state = Actions.MOVE;
+
+		if(stamina.currentValue == 0)
+		{
+			stamina.isEmpty = true;
+		}
+	}
+
+	private void getCurrentSelected()
+	{
+		if(equipState != Toolbar.GetItem)
+		{
+			equipState = Toolbar.GetItem;
+		}
+	}
+
+	
+}
