@@ -1,0 +1,85 @@
+using Godot;
+using System;
+
+public class Damage : Node2D
+{
+    PackedScene damageOutput = ResourceLoader.Load<PackedScene>("res://Assets/Scenes/World/DamageOutput.tscn");
+   
+    [Export] float recoverTimer = 0.2f;
+    [Export] float knockbackForce = 200f;
+    [Export] internal int damageAmount = 10;
+    internal Vector2 knockback = Vector2.Zero;
+    internal Vector2 direction = Vector2.Zero;
+    internal bool takingDamage = false;
+    internal bool knockbackPlaying = false;
+    internal bool isPlayer = false;
+    AnimationNodeStateMachinePlayback animationState;
+    AnimationTree animationTree;
+    CanvasItem canvas;
+    ProgressBar health;
+
+    public override void _Ready()
+    {
+        //knockback = GetParent<KinematicBody2D>();
+        canvas = this.GetNode<CanvasItem>("../Sprite");
+        animationTree = this.GetNode<AnimationTree>("../AnimationTree");
+        animationState = (AnimationNodeStateMachinePlayback)this.animationTree.Get("parameters/playback");
+        health = GetNode<ProgressBar>("../../Health");
+    }
+
+    public override void _Process(float delta)
+    {
+         //knockback = knockback.MoveToward(Vector2.Zero, 800 * delta);
+        
+        //Making knockback always move towards 0,0 if above it
+        if(knockback != Vector2.Zero)
+        {
+            knockback = knockback.MoveToward(Vector2.Zero, 800 * delta);
+        }
+        
+    }
+    
+    public async void KnockBack(float delta)
+    {
+        //Change animation to hurt and pushback enemy
+        knockback = -direction * knockbackForce;
+        takingDamage = true;
+        //Flash Colour Red
+        canvas.Modulate = Color.Color8(255,20,20);
+        await ToSignal(GetTree().CreateTimer(0.2f), "timeout");
+        canvas.Modulate = Color.Color8(255,255,255);
+        //wait until animation is finished then change to idle;
+        await ToSignal(GetTree().CreateTimer(animationState.GetCurrentLength() - 0.2f), "timeout");
+        //Wait until enemy has recovered then change state to Idle
+        await ToSignal(GetTree().CreateTimer(recoverTimer), "timeout");
+        takingDamage = false;
+    }
+
+  private Node2D SpawnEffect(PackedScene effectScene, Vector2 effectPosition)
+	{
+		if(effectScene != null)
+		{
+			Node effectNode = effectScene.Instance();
+			Node2D effect = null;
+			GetTree().CurrentScene.AddChild(effectNode);
+			effect = effectNode as Node2D;
+			effect.GlobalPosition = effectPosition;
+			return effect;
+		}
+		return null;
+	}
+
+	public void SpawnDamageOutput(int damage, Color colour)
+	{
+		Vector2 pos = GlobalPosition;
+        pos.y -= 20;
+		Node2D output = SpawnEffect(damageOutput, pos);
+		if(output != null)
+		{
+            GetNode<DamageOutput>(output.GetPath()).direction = -direction;
+            output.GetChild<Label>(0).Text = damage.ToString();
+            output.GetChild<Control>(0).Set("custom_colors/font_color", colour);
+		}
+
+	}
+}
